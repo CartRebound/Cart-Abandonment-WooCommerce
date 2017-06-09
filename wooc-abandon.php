@@ -43,8 +43,8 @@ function wooc_abandon_init(){
         private static $_instance = null;
 
         protected static $settings = [
-            'store_id'=>4,
-            'secret_key'=>'2E7LP1fl2jkBDJZFSK6Aq7kmTMvlbChvtypu2SAn'
+            'store_id'=>1,
+            'secret_key'=>'fr6JoXJcDmMLcJqqGV5zido0FUXLfmyRDnDNx3Vw'
         ];
 
         protected static $endpoint = "http://www.cr-server.dev";
