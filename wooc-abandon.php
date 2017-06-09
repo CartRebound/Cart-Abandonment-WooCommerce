@@ -47,7 +47,7 @@ function wooc_abandon_init(){
             'secret_key'=>'fr6JoXJcDmMLcJqqGV5zido0FUXLfmyRDnDNx3Vw'
         ];
 
-        protected static $endpoint = "http://www.cr-server.dev";
+        protected static $endpoint = "https://app.cartrebound.com";
 
         public static function instance(){
             if (is_null(self::$_instance)) {
