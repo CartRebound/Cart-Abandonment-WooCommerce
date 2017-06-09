@@ -282,7 +282,7 @@ function wooc_abandon_init(){
                 }
                 $contents['items'][] = array(
                     'product_id'=>$cc['product_id'],
-                    'product_title'=>$cc['data']->get_name(),
+                    'product_title'=> method_exists($cc['data'], "get_name") ? $cc['data']->get_name() : $cc['data']->name,
                     'quantity'=>$cc['quantity'],
                     'variation_id'=>$cc['variation_id'],
                     'variation'=>$cc['variation'],
