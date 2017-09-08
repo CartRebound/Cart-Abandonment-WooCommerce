@@ -9,7 +9,7 @@ jQuery(function($){
 
 
 
-        console.log(eml);
+        // console.log(eml);
 
         if(woocAbandon.validateEmail(eml)){
             $.post("/wp-admin/admin-ajax.php?action=capture_woocabandon_email", {

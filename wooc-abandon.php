@@ -1,14 +1,14 @@
 <?php
 
 /*
-Plugin Name: Wooc Abandon
-Plugin URI: https://www.abcdef.com.au/
-Description: Wooc Abandon.
+Plugin Name: Cart Rebound for WooCommerce
+Plugin URI: https://www.cartrebound.com
+Description: Cart Rebound.
 Version: 0.0.1
 Author: Rhys W
-Author URI: https://www.abcdef.com.au/
+Author URI: http://www.cartrebound.com
 
-Copyright: © 2017 Rhys W
+Copyright: © 2017 Cart Rebound
 */
 
 
@@ -16,6 +16,15 @@ Copyright: © 2017 Rhys W
 
 add_action("plugins_loaded", "wooc_abandon_init", 0);
 register_activation_hook(__FILE__, 'woocabandon_create_plugin_database_table');
+
+add_filter( "amr_about_to_run_tests", "add_cartrebound_tests", 10, 1 );
+
+
+function add_cartrebound_tests( $suite ) {
+	$suite->addTestFile( plugin_dir_path( __FILE__ ) . "tests/cartrebound_tests.php" );
+
+	return $suite;
+}
 
 function woocabandon_create_plugin_database_table()
 {
@@ -29,7 +38,7 @@ function woocabandon_create_plugin_database_table()
     if ($wpdb->get_var("show tables like '$wp_track_table'") != $wp_track_table) {
 
         $sql = "CREATE TABLE `" . $wp_track_table . "` ( ";
-        $sql .= "  `cookie`  varchar(255)  NOT NULL,  `cart_contents` text, ";
+        $sql .= "  `cookie`  varchar(255)  NOT NULL,  `unique_key` varchar(255) not null, `cart_contents` text,created_at datetime default null, synced_at datetime default null, modified_at datetime default null, sync_key varchar(255) default null, email varchar(255) not null,";
         $sql .= "  PRIMARY KEY `cookie_hash` (`cookie`) ";
         $sql .= ") ENGINE=MyISAM DEFAULT CHARSET=latin1 AUTO_INCREMENT=1 ; ";
         require_once(ABSPATH . '/wp-admin/includes/upgrade.php');
@@ -42,12 +51,13 @@ function wooc_abandon_init(){
     class WC_Abandon{
         private static $_instance = null;
 
-        protected static $settings = [
-            'store_id'=>1,
-            'secret_key'=>'fr6JoXJcDmMLcJqqGV5zido0FUXLfmyRDnDNx3Vw'
+        public static $send_orders_older_than_minutes = 0;
+
+        public static $settings = [
+            'store_id'=>false,
+            'secret_key'=>false
         ];
 
-        protected static $endpoint = "https://app.cartrebound.com";
 
         public static function instance(){
             if (is_null(self::$_instance)) {
@@ -57,7 +67,19 @@ function wooc_abandon_init(){
             return self::$_instance;
         }
 
+        public function load_settings(){
+            self::$settings['store_id'] = get_option('WC_settings_cartrebound_site_id');
+            self::$settings['secret_key'] = get_option('WC_settings_cartrebound_secret_key');
+            self::$settings['log'] = get_option('WC_settings_cartrebound_logging_enabled');
+            self::$settings['live'] = get_option('WC_settings_cartrebound_livemode_enabled');
+            self::$settings['endpoint'] = self::$settings['live'] === 'yes' ? 'https://app.cartrebound.com' : 'http://app.cartrebound.app';
+        }
+
         public function __construct(){
+
+            add_filter('woocommerce_settings_tabs_array',array($this, 'add_settings_tab'), 50);
+            add_action('woocommerce_settings_tabs_settings_cartrebound', array($this, 'settings_tab'));
+            add_action('woocommerce_update_options_settings_cartrebound', array($this, 'update_settings'));
 
             add_action("woocommerce_add_to_cart", array($this, 'get_vital_info'));
 
@@ -69,26 +91,100 @@ function wooc_abandon_init(){
 
             add_action('wp_login', array($this, 'get_vital_info'));
 
-            function add_query_vars_filter($vars)
-            {
-                $vars[] = "resume_cart_with_cookie";
 
-                return $vars;
-            }
-
-            add_filter('query_vars', 'add_query_vars_filter');
+            add_filter('query_vars', array($this, 'abandon_query_vars_filter'));
 
 
             add_action('pre_get_posts', array($this, 'abandon_url_handler'));
 
 
             add_action("woocommerce_init", array($this, 'ping_server'));
-            $this->ping_server();
 
+            $this->load_settings();
 
             $this->queue_assets();
 
         }
+
+
+	    public function abandon_query_vars_filter( $vars ) {
+		    $vars[] = "resume_cart_with_cookie";
+
+		    return $vars;
+	    }
+        public function add_settings_tab($settings_tabs){
+            $settings_tabs['settings_cartrebound'] = __('Cart Rebound', 'woocommerce-settings-tab-cartrebound');
+
+            return $settings_tabs;
+        }
+
+        public function settings_tab(){
+            woocommerce_admin_fields(self::get_settings());
+        }
+
+        public static function update_settings()
+        {
+            woocommerce_update_options(self::get_settings());
+        }
+
+        public static function get_settings()
+        {
+
+            $settings = array(
+                'wc_cart_rebound_section_title' => array(
+                    'name' => __('Settings', 'woocommerce-settings-tab-cartrebound'),
+                    'type' => 'title',
+                    'desc' => '',
+                    'id' => 'WC_settings_cartrebound_section_title'
+                ),
+                'wc_cart_rebound_site_id' => array(
+                    'name' => __('Enter your Site ID', 'woocommerce-settings-tab-cartrebound'),
+                    'type' => 'text',
+                    'desc' => __('This will be on your intro email.',
+                        'woocommerce-settings-tab-cartrebound'),
+                    'desc_tip' => true,
+                    'id' => 'WC_settings_cartrebound_site_id'
+                ),
+                'wc_cart_rebound_secret_key' => array(
+                    'name' => __('Enter your Secret Key', 'woocommerce-settings-tab-cartrebound'),
+                    'type' => 'text',
+                    'css' => 'min-width:350px;',
+                    'desc' => __('This will be on your intro email.',
+                        'woocommerce-settings-tab-cartrebound'),
+                    'desc_tip' => true,
+                    'id' => 'WC_settings_cartrebound_secret_key'
+                ),
+                'wc_cart_rebound_logging_enabled' => array(
+                    'name' => __('Enable Logging?', 'woocommerce-settings-tab-cartrebound'),
+                    'type' => 'checkbox',
+                    'id' => 'WC_settings_cartrebound_logging_enabled'
+                ),
+                'wc_cart_rebound_livemode_enabled' => array(
+                    'name' => __('Enable Live Mode? (YES if unsure)', 'woocommerce-settings-tab-cartrebound'),
+                    'type' => 'checkbox',
+                    'id' => 'WC_settings_cartrebound_livemode_enabled'
+                ),
+                'wc_cart_rebound_section_end' => array(
+                    'type' => 'sectionend',
+                    'id' => 'WC_settings_cartrebound_section_end'
+                )
+            );
+
+            return apply_filters('WC_settings_cartrebound_settings', $settings);
+        }
+
+        public static function log($message)
+        {
+            if (empty(self::$log)) {
+                self::$log = new WC_Logger();
+            }
+
+            if(get_option("WC_settings_cartrebound_livemode_enabled") === "yes"){
+                self::$log->add('CartRebound', $message);
+            }
+            //
+        }
+
 
 
         function abandon_url_handler($query)
@@ -152,7 +248,7 @@ function wooc_abandon_init(){
                 set_transient($transient_key, $payload);
             }
 
-            $this->get_vital_info();
+            $this->get_vital_info(null, $email);
 
 
             echo "ok";
@@ -201,7 +297,7 @@ function wooc_abandon_init(){
                     'body' => json_encode($body)
                 );
 
-                $response = wp_remote_post(self::$endpoint . "/api/ping", $args);
+                $response = wp_remote_post(self::$settings['endpoint'] . "/api/ping", $args);
             }
 
         }
@@ -211,94 +307,67 @@ function wooc_abandon_init(){
 
             $email = $order->get_billing_email();
 
-            $status = "converted";
-
-
-            $body = compact("status", "email");
-
-
-            $args = array(
-                'headers' => array(
-                    'Authorization' => $this->get_authorization_header(),
-                    'Content-Type' => 'application/json'
-                ),
-                'body' => json_encode($body)
-            );
-
-            $response = wp_remote_post(self::$endpoint . "/api/vitals", $args);
+            $this->get_vital_info("completed", $email, $order);
         }
 
-        public function user_placed_order(){
+        public function user_placed_order($order_id){
 
             $cookie = WC()->session->get_session_cookie()[3];
-            $status = "converted";
+            $order = new WC_Order($order_id);
 
-            $email = false;
-
-            $email = wp_get_current_user()->user_email;
-
-            if (!$email) {
-
-                $transient_key = $this->get_transient_key_for_cookie_element();
-
-                if ($payload = get_transient($transient_key)) {
-                    $email = $payload['email'];
-                }
-            }
-
-
-            $body = compact("cookie", "status", "email");
-
-
-            $args = array(
-                'headers' => array(
-                    'Authorization' => $this->get_authorization_header(),
-                    'Content-Type' => 'application/json'
-                ),
-                'body' => json_encode($body)
-            );
-
-            $response = wp_remote_post(self::$endpoint . "/api/vitals", $args);
+            $this->get_vital_info("completed", null, $order);
         }
 
-        public function get_vital_info($hash)
+	    /**
+	     * @param null $status
+	     * @param null $email
+	     * @param WC_Order $order
+	     */
+        public function get_vital_info($status=null, $email = null, $order = null)
         {
            // 7cbbc409ec990f19c78c75bd1e06f215
             $cookie = WC()->session->get_session_cookie()[3];
 
-            $cart_hash = md5(json_encode(WC()->cart->get_cart_for_session()));
-
-            $contents = array();
-
-            $contents['items'] = array();
-            foreach(WC()->cart->cart_contents as $ck=>$cc){
-
-                $image_ids = $cc['data']->get_gallery_attachment_ids();
-
-                $image_url = false;
-
-                if($image_ids && count($image_ids) > 0){
-                    $image_url = wp_get_attachment_url($image_ids[0]);
-                }
-                $contents['items'][] = array(
-                    'product_id'=>$cc['product_id'],
-                    'product_title'=> method_exists($cc['data'], "get_name") ? $cc['data']->get_name() : $cc['data']->name,
-                    'quantity'=>$cc['quantity'],
-                    'variation_id'=>$cc['variation_id'],
-                    'variation'=>$cc['variation'],
-                    'product_image'=> $image_url,
-                    'product_url'=>get_permalink($cc['product_id']),
-                    'product_price'=> $cc['data']->get_price(),
-                    'line_total'=> $cc['line_total'] + $cc['line_tax']
-                    );
+            // at this stage, we need a cookie.
+            if(!$cookie){
+            	return;
             }
 
-            $contents['meta'] = array();
-            $contents['meta']['checkout_url'] = wc_get_checkout_url();
+	        $contents['items'] = array();
+	        $contents['meta'] = array();
+            if($status != "completed"){
+	            $cart_hash = md5( json_encode( WC()->cart->get_cart_for_session() ) );
 
-            $email = false;
 
-            $email = wp_get_current_user()->user_email;
+	            $cart = WC()->cart->cart_contents;
+
+	            $contents = $this->contentsFromCart( $cart );
+
+	            WC()->cart->calculate_totals();
+	            $contents['meta']['checkout_url'] = wc_get_checkout_url();
+	            $contents['meta']['total']        = WC()->cart->subtotal;
+            }
+            else{
+            	$contents = $this->contentsFromOrder($order);
+	            $contents['meta']['total'] = $order->get_total();
+            }
+
+
+	        $contents['meta']['currency']        = get_woocommerce_currency();
+	        $contents['meta']['currency_symbol'] = get_woocommerce_currency_symbol();
+
+            if($status){
+	            $contents['meta']['current_status'] = $status;
+            }
+
+			if(!$email){
+				$email = wp_get_current_user()->user_email;
+
+			}
+
+			if(!$email && $order){
+				$email =$order->get_billing_email();
+			}
 
             if(!$email){
 
@@ -310,24 +379,33 @@ function wooc_abandon_init(){
             }
             error_log($cookie . " " . $cart_hash . " " . $email);
 
-            $body = compact('cookie', 'cart_hash', 'email', 'contents');
 
-            $args = array(
-                'headers' => array(
-                    'Authorization' => $this->get_authorization_header(),
-                    'Content-Type' => 'application/json'
-                ),
-                'body' => json_encode($body)
-            );
+	            global $wpdb;
 
-            global $wpdb;
+	            $sql = "insert into {$wpdb->prefix}woocabandon_carts (cookie, unique_key, cart_contents, created_at, modified_at, email, synced_at, finalised_at) VALUES (%s,%s, %s, %s, %s, %s, null, %s) ON DUPLICATE KEY UPDATE cart_contents = %s, modified_at = %s, synced_at=null";
 
-            $sql = "insert into {$wpdb->prefix}woocabandon_carts (cookie, cart_contents) VALUES (%s,%s) ON DUPLICATE KEY UPDATE cart_contents = %s";
+	            $json_contents = json_encode( $contents );
 
-            $json_contents = json_encode($contents);
+	            $date = date( "Y-m-d H:i:s" );
+	            $sql  = $wpdb->prepare( $sql, $cookie, $cookie . time(), $json_contents, $date, $date, $email, ( $order ? $date : null ), $json_contents, $date );
+	            $wpdb->query( $sql );
 
-            $sql = $wpdb->prepare($sql, $cookie, $json_contents, $json_contents);
-            $wpdb->query($sql);
+
+	        if ( $email ) {
+		        $sql = "update {$wpdb->prefix}woocabandon_carts set email = %s where cookie = %s";
+
+		        $sql = $wpdb->prepare( $sql, $email, $cookie );
+		        $wpdb->query( $sql );
+	        }
+
+
+	            if($order){
+	            	$sql = "update {$wpdb->prefix}woocabandon_carts set cookie = concat(cookie,'_completed".time()."') where cookie = %s";
+
+	            	$sql = $wpdb->prepare($sql, $cookie);
+	            	$wpdb->query($sql);
+	            }
+
 
             /*
             $wpdb->update($wpdb->prefix . 'woocabandon_carts', array(
@@ -335,11 +413,78 @@ function wooc_abandon_init(){
                 'cart_contents'=>$contents),
             array('cookie'=>$cookie));*/
 
+            // if there's 10 entries, or if an order was modified > 10 mins ago.
+	        // force a sync if it's a completed order.
+	        if($this->should_sync() || $status == "completed"){
+		        $this->sync_to_server();
+	        }
 
 
-            $response = wp_remote_post(self::$endpoint . "/api/vitals?XDEBUG_SESSION_START=1", $args);
+
+           // $response = wp_remote_post(self::$settings['endpoint'] . "/api/vitals?XDEBUG_SESSION_START=1", $args);
         }
 
+        public function should_sync(){
+        	global $wpdb;
+        	//$sql = "insert into {$wpdb->prefix}woocabandon_carts (cookie, cart_contents, created_at, email, synced_at) VALUES (%s,%s, %s, %s, null) ON DUPLICATE KEY UPDATE cart_contents = %s, modified_at = %s";
+			$sql = "select count(*) as count from {$wpdb->prefix}woocabandon_carts where synced_at = null;";
+
+			$row = $wpdb->get_row($sql);
+
+			if( (int)$row->count > 10){
+				return true;
+			}
+
+			$sql = "select modified_at as first_modified_not_synced from {$wpdb->prefix}woocabandon_carts where synced_at is null order by modified_at asc;";
+
+			$row = $wpdb->get_row($sql);
+			$minute = 60;
+			if(strtotime($row->first_modified_not_synced) < time() - (self::$send_orders_older_than_minutes * $minute)){
+				return true;
+			}
+
+			return false;
+        }
+
+        public function sync_to_server(){
+        	global $wpdb;
+        	$sync_key = wp_generate_password( 24 );
+	        $date = date( "Y-m-d H:i:s" );
+        	$wpdb->update( "{$wpdb->prefix}woocabandon_carts", ['sync_key'=> $sync_key, 'sync_attempted_at'=> $date], ['synced_at'=>null]);
+
+        	$records = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->prefix}woocabandon_carts WHERE sync_key = %s",
+		        $sync_key ) );
+
+
+        	$body = compact( 'records' );
+
+	        $args = array(
+		        'headers' => array(
+			        'Authorization' => $this->get_authorization_header(),
+			        'Content-Type'  => 'application/json'
+		        ),
+		        'timeout' => 45,
+		        'body'    => json_encode( $body )
+	        );
+
+
+        	$response = wp_remote_post(self::$settings['endpoint'] . "/api/store_sync?XDEBUG_SESSION_START=1", $args);
+
+        	if($response && gettype($response) !== "WP_Error"){
+        		$response_object = json_decode($response['body']);
+
+        		if( $response_object->result === "success"){
+			        $wpdb->update( "{$wpdb->prefix}woocabandon_carts", [ 'synced_at' => date( "Y-m-d H:i:s" )],
+				        [ 'sync_key' => $sync_key ] );
+		        }
+		        else{
+
+			        $wpdb->update( "{$wpdb->prefix}woocabandon_carts", [ 'sync_key' => null ],
+				        [ 'sync_key' => $sync_key ] );
+		        }
+	        }
+
+        }
 
         public function queue_assets()
         {
@@ -350,6 +495,92 @@ function wooc_abandon_init(){
              wp_enqueue_script("wooc-abandon");
 
         }
+
+
+        private function contentsLineItem($product_id, $product_title, $quantity, $variation_id, $variation, $product_image, $product_url, $product_price, $line_total){
+			return array(
+				'product_id'        => $product_id,
+				    'product_title' => $product_title,
+				    'quantity'      => $quantity,
+				    'variation_id'  => $variation_id,
+				    'variation'     => $variation,
+				    'product_image' => $product_image,
+				    'product_url'   => $product_url,
+				    'product_price' => $product_price,
+				    'line_total'    => $line_total
+			    );
+        }
+
+	    /**
+	     * @param WC_Order $order
+	     *
+	     * @return array
+	     */
+        public function contentsFromOrder($order){
+        	$contents = array();
+        	$items = $order->get_items();
+
+			foreach($items as $item){
+				$product = $item->get_product();
+
+				$image_ids = $product->get_gallery_image_ids();
+				$image_url = false;
+
+				if ( $image_ids && count( $image_ids ) > 0 ) {
+					$image_url = wp_get_attachment_url( $image_ids[0] );
+				}
+				$line = $this->contentsLineItem(
+					$item->get_product_id(),
+					$product->get_name(),
+					$item->get_quantity(),
+					$item->get_variation_id(),
+					null,
+					$image_url,
+					get_permalink($product->get_id()),
+					$product->get_price(),
+					$item->get_total() + $item->get_total_tax()
+
+						);
+				$contents['items'][] = $line;
+			}
+
+			return $contents;
+        }
+	    /**
+	     * @param $cart
+	     *
+	     * @return array;
+	     */
+	    public function contentsFromCart( $cart ) {
+
+	    	$contents = array();
+		    foreach ( $cart as $ck => $cc ) {
+
+			    $image_ids = $cc['data']->get_gallery_attachment_ids();
+
+			    $image_url = false;
+
+			    if ( $image_ids && count( $image_ids ) > 0 ) {
+				    $image_url = wp_get_attachment_url( $image_ids[0] );
+			    }
+			    $contents['items'][] = $this->contentsLineItem(
+				    $cc['product_id'],
+				    method_exists( $cc['data'],
+					    "get_name" ) ? $cc['data']->get_name() : $cc['data']->name,
+				    $cc['quantity'],
+				    $cc['variation_id'],
+				    $cc['variation'],
+				    $image_url,
+				    get_permalink( $cc['product_id'] ),
+				    $cc['data']->get_price(),
+				    $cc['line_total'] + $cc['line_tax']
+			    );
+
+
+		    }
+
+		    return $contents;
+	    }
 
     }
 
