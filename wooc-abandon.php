@@ -38,7 +38,8 @@ function woocabandon_create_plugin_database_table()
     if ($wpdb->get_var("show tables like '$wp_track_table'") != $wp_track_table) {
 
         $sql = "CREATE TABLE `" . $wp_track_table . "` ( ";
-        $sql .= "  `cookie`  varchar(255)  NOT NULL,  `unique_key` varchar(255) not null, `cart_contents` text,created_at datetime default null, synced_at datetime default null, modified_at datetime default null, sync_key varchar(255) default null, email varchar(255) not null,";
+        $sql .= "  `cookie`  varchar(255)  NOT NULL,  `unique_key` varchar(255) not null, `cart_contents` text,created_at datetime default null,
+	`finalised_at` DATETIME NULL DEFAULT NULL, synced_at datetime default null, `sync_attempted_at` DATETIME NULL DEFAULT NULL, modified_at datetime default null, sync_key varchar(255) default null, email varchar(255) not null,";
         $sql .= "  PRIMARY KEY `cookie_hash` (`cookie`) ";
         $sql .= ") ENGINE=MyISAM DEFAULT CHARSET=latin1 AUTO_INCREMENT=1 ; ";
         require_once(ABSPATH . '/wp-admin/includes/upgrade.php');
@@ -73,6 +74,7 @@ function wooc_abandon_init(){
             self::$settings['log'] = get_option('WC_settings_cartrebound_logging_enabled');
             self::$settings['live'] = get_option('WC_settings_cartrebound_livemode_enabled');
             self::$settings['endpoint'] = self::$settings['live'] === 'yes' ? 'https://app.cartrebound.com' : 'http://app.cartrebound.app';
+           // error_log("live mode is " . self::$settings['live']);
         }
 
         public function __construct(){
@@ -391,6 +393,11 @@ function wooc_abandon_init(){
 	            $wpdb->query( $sql );
 
 
+	            if($wpdb->last_error){
+	            	error_log($wpdb->last_error);
+	            }
+
+
 	        if ( $email ) {
 		        $sql = "update {$wpdb->prefix}woocabandon_carts set email = %s where cookie = %s";
 
@@ -415,7 +422,9 @@ function wooc_abandon_init(){
 
             // if there's 10 entries, or if an order was modified > 10 mins ago.
 	        // force a sync if it's a completed order.
+	        error_log("checking if should sync.");
 	        if($this->should_sync() || $status == "completed"){
+	        	error_log("entering sync routine");
 		        $this->sync_to_server();
 	        }
 
@@ -434,14 +443,29 @@ function wooc_abandon_init(){
 			if( (int)$row->count > 10){
 				return true;
 			}
+			error_log("there's less than 10 rows.");
 
 			$sql = "select modified_at as first_modified_not_synced from {$wpdb->prefix}woocabandon_carts where synced_at is null order by modified_at asc;";
 
 			$row = $wpdb->get_row($sql);
 			$minute = 60;
-			if(strtotime($row->first_modified_not_synced) < time() - (self::$send_orders_older_than_minutes * $minute)){
+
+			$compare_lower = strtotime( $row->first_modified_not_synced );
+			if(!$compare_lower){
+				$compare_lower = 0;
+			}
+
+	        error_log( "fmns is " . $compare_lower);
+
+
+	        error_log("time - delay is " . (time() - ( self::$send_orders_older_than_minutes * $minute )));
+
+			if( $compare_lower < time() - (self::$send_orders_older_than_minutes * $minute)){
 				return true;
 			}
+
+			error_log("forcing true.");
+			return true;
 
 			return false;
         }
@@ -468,7 +492,14 @@ function wooc_abandon_init(){
 	        );
 
 
-        	$response = wp_remote_post(self::$settings['endpoint'] . "/api/store_sync?XDEBUG_SESSION_START=1", $args);
+	        $url = self::$settings['endpoint'] . "/api/store_sync?XDEBUG_SESSION_START=1";
+
+	        error_log("calling" . $url );
+
+        	$response = wp_remote_post($url, $args);
+			error_log("response is");
+			error_log(json_encode($response));
+
 
         	if($response && gettype($response) !== "WP_Error"){
         		$response_object = json_decode($response['body']);
@@ -555,18 +586,31 @@ function wooc_abandon_init(){
 
 	    	$contents = array();
 		    foreach ( $cart as $ck => $cc ) {
+			    if(version_compare(WC()->version, 3.0, ">=")){
+				    $image_ids = $cc['data']->get_gallery_attachment_ids();
+			    }
+			    else{
+				    $image_ids = [$cc['data']->get_image_id()];
+			    }
 
-			    $image_ids = $cc['data']->get_gallery_attachment_ids();
 
 			    $image_url = false;
 
 			    if ( $image_ids && count( $image_ids ) > 0 ) {
 				    $image_url = wp_get_attachment_url( $image_ids[0] );
 			    }
+
+			    $name = false;
+			    if ( version_compare( WC()->version, 3.0, ">=" ) ) {
+				    $name = $cc['data']->get_name();
+			    } else {
+				    $name = $cc['data']->get_title();
+			    }
+
+
 			    $contents['items'][] = $this->contentsLineItem(
 				    $cc['product_id'],
-				    method_exists( $cc['data'],
-					    "get_name" ) ? $cc['data']->get_name() : $cc['data']->name,
+				    $name,
 				    $cc['quantity'],
 				    $cc['variation_id'],
 				    $cc['variation'],
