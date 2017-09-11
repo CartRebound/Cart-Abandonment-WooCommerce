@@ -1,6 +1,4 @@
-console.log("Hi it's woocabandon!");
 jQuery(function($){
-    console.log("Hi it's jq!");
 
     var $eml = $("#billing_email");
 
