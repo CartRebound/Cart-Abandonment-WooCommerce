@@ -19,6 +19,12 @@ register_activation_hook(__FILE__, 'woocabandon_create_plugin_database_table');
 
 add_filter( "amr_about_to_run_tests", "add_cartrebound_tests", 10, 1 );
 
+global $woocabandon_db_version;
+$woocabandon_db_version = '0.21';
+
+if ( get_option( 'woocabandon_db_version' ) !== $woocabandon_db_version ) {
+	woocabandon_create_plugin_database_table();
+}
 
 function add_cartrebound_tests( $suite ) {
 	$suite->addTestFile( plugin_dir_path( __FILE__ ) . "tests/cartrebound_tests.php" );
@@ -28,28 +34,39 @@ function add_cartrebound_tests( $suite ) {
 
 function woocabandon_create_plugin_database_table()
 {
-    global $table_prefix, $wpdb;
+    global $table_prefix, $wpdb, $woocabandon_db_version;
 
     $tblname = 'woocabandon_carts';
     $wp_track_table = $table_prefix . "$tblname";
 
-    #Check to see if the table exists already, if not, then create it
-
-    if ($wpdb->get_var("show tables like '$wp_track_table'") != $wp_track_table) {
-
         $sql = "CREATE TABLE `" . $wp_track_table . "` ( ";
-        $sql .= "  `cookie`  varchar(255)  NOT NULL,  `unique_key` varchar(255) not null, `cart_contents` text,created_at datetime default null, synced_at datetime default null, modified_at datetime default null, sync_key varchar(255) default null, email varchar(255) not null,";
-        $sql .= "  PRIMARY KEY `cookie_hash` (`cookie`) ";
+        $sql .= "  `cart_identifier`  varchar(255)  NOT NULL,
+					`state` VARCHAR(255) NOT NULL, 
+					`cart_contents` text,
+					created_at datetime default null, 
+					synced_at datetime default null,
+	`sync_attempted_at` DATETIME  null DEFAULT NULL,
+					 modified_at datetime default null, 
+					finalised_at datetime default null, sync_key varchar(255) default null, email varchar(255) null,";
+        $sql .= "	PRIMARY KEY (`cart_identifier`, `state`) ";
         $sql .= ") ENGINE=MyISAM DEFAULT CHARSET=latin1 AUTO_INCREMENT=1 ; ";
         require_once(ABSPATH . '/wp-admin/includes/upgrade.php');
+
         dbDelta($sql);
-    }
+	if ( $wpdb->last_error ) {
+		echo $wpdb->last_error;
+		die();
+	}
+	else{
+		update_option("woocabandon_db_version", $woocabandon_db_version);
+	}
 }
 
 
 function wooc_abandon_init(){
     class WC_Abandon{
         private static $_instance = null;
+        protected $table="";
 
         public static $send_orders_older_than_minutes = 0;
 
@@ -73,6 +90,7 @@ function wooc_abandon_init(){
             self::$settings['log'] = get_option('WC_settings_cartrebound_logging_enabled');
             self::$settings['live'] = get_option('WC_settings_cartrebound_livemode_enabled');
             self::$settings['endpoint'] = self::$settings['live'] === 'yes' ? 'https://app.cartrebound.com' : 'http://app.cartrebound.app';
+            error_log("live mode is " . self::$settings['live']);
         }
 
         public function __construct(){
@@ -81,10 +99,13 @@ function wooc_abandon_init(){
             add_action('woocommerce_settings_tabs_settings_cartrebound', array($this, 'settings_tab'));
             add_action('woocommerce_update_options_settings_cartrebound', array($this, 'update_settings'));
 
-            add_action("woocommerce_add_to_cart", array($this, 'get_vital_info'));
+            // add_action("woocommerce_add_to_cart", array($this, 'get_vital_info'));
 
-            add_action('wp_ajax_capture_woocabandon_email', array($this, 'capture_woocabandon_email_callback'));
-            add_action('wp_ajax_nopriv_capture_woocabandon_email', array($this, 'capture_woocabandon_email_callback'));
+            //do_action( 'woocommerce_add_to_cart', $cart_item_key, $product_id, $quantity, $variation_id, $variation, $cart_item_data );
+	        add_action("woocommerce_add_to_cart", array($this, 'added_to_cart'), 10, 0);
+
+            add_action('wp_ajax_capture_cartrebound_email', array($this, 'capture_cartrebound_email_callback'));
+            add_action('wp_ajax_nopriv_capture_cartrebound_email', array($this, 'capture_cartrebound_email_callback'));
 
             add_action('woocommerce_thankyou', array($this, 'user_placed_order'), 10, 1);
             add_action("woocommerce_order_status_processing", array($this, 'user_placed_order_by_email'), 10, 1);
@@ -97,8 +118,8 @@ function wooc_abandon_init(){
 
             add_action('pre_get_posts', array($this, 'abandon_url_handler'));
 
-
-            add_action("woocommerce_init", array($this, 'ping_server'));
+            global $wpdb;
+            $this->table = "{$wpdb->prefix}woocabandon_carts";
 
             $this->load_settings();
 
@@ -195,9 +216,10 @@ function wooc_abandon_init(){
 
                     global $wpdb;
 
+                    $table = $this->table;
 
 
-                    $results = $wpdb->get_results($wpdb->prepare("select * from {$wpdb->prefix}woocabandon_carts where cookie = %s", $cookie));
+                    $results = $wpdb->get_results($wpdb->prepare("select * from $table where cart_identifier = %s", $cookie));
 
                     if(count($results) > 0){
 
@@ -220,35 +242,25 @@ function wooc_abandon_init(){
             }
         }
 
-        public function get_transient_key_for_cookie_element(){
-            return "wa_cookie_" . WC()->session->get_session_cookie()[3];
-        }
-
-        public function capture_current_user_email(){
-            $email = wp_get_current_user()->user_email;
-        }
-
-        public function capture_woocabandon_email_callback(){
+        public function capture_cartrebound_email_callback(){
 
             $email = $_POST['email'];
             $time = $_POST['time'];
+            $transient_key = "cartrebound_email_received_" . $this->_get_identifier();
 
-            $payload = array('email'=>$email, 'time'=>$time);
-            $transient_key = $this->get_transient_key_for_cookie_element();
+            if ($last_received_time = get_transient($transient_key)) {
 
-            if ($old_payload = get_transient($transient_key)) {
-                $old_time = $old_payload['time'];
-
-                if($time > $old_time){
+                if($time > $last_received_time){
                     // more recent keystroke.
-                    set_transient($transient_key, $payload);
+                    set_transient($transient_key, $time);
+                    $this->_set_email_local($this->_get_identifier(), $email);
                 }
             }
             else{
-                set_transient($transient_key, $payload);
+                set_transient($transient_key, $time);
+	            $this->_set_email_local( $this->_get_identifier(), $email );
             }
 
-            $this->get_vital_info(null, $email);
 
 
             echo "ok";
@@ -264,42 +276,6 @@ function wooc_abandon_init(){
             $secret_key = self::$settings['secret_key'];
 
             return 'Basic ' . base64_encode($token_id . ':' . $secret_key);
-        }
-
-        public function ping_server(){
-
-            global $woocommerce;
-            $session = WC()->session;
-
-            if($session){
-                $cookie = WC()->session->get_session_cookie()[3];
-
-                $email = false;
-
-                $email = wp_get_current_user()->user_email;
-
-                if (!$email) {
-
-                    $transient_key = $this->get_transient_key_for_cookie_element();
-
-                    if ($payload = get_transient($transient_key)) {
-                        $email = $payload['email'];
-                    }
-                }
-
-                $body = compact('cookie', 'email');
-
-                $args = array(
-                    'headers' => array(
-                        'Authorization' => $this->get_authorization_header(),
-                        'Content-Type' => 'application/json'
-                    ),
-                    'body' => json_encode($body)
-                );
-
-                $response = wp_remote_post(self::$settings['endpoint'] . "/api/ping", $args);
-            }
-
         }
 
         public function user_placed_order_by_email($order_id){
@@ -318,6 +294,101 @@ function wooc_abandon_init(){
             $this->get_vital_info("completed", null, $order);
         }
 
+        public function _get_identifier(){
+        	$session_cookie = WC()->session->get_session_cookie();
+	        return $session_cookie[3];
+        }
+
+        public function _get_cart_contents(){
+        	$contents = array();
+	        $contents['items'] = array();
+	        $contents['meta']  = array();
+        }
+	    //do_action( 'woocommerce_add_to_cart', $cart_item_key, $product_id, $quantity, $variation_id, $variation, $cart_item_data );
+        public function added_to_cart(){
+
+        	$identifier = $this->_get_identifier();
+
+	        $contents = $this->contentsFromCart( WC()->cart->cart_contents );
+
+	        $this->_sync_local($identifier, $contents);
+
+	        $this->_sync_remote_if_should();
+        }
+
+        public function _sync_remote_if_should(){
+	        if ( $this->should_sync() ) {
+		        $this->sync_to_server();
+	        }
+        }
+
+        public function _set_email_local($identifier, $email){
+	        global $wpdb;
+	        $table = $this->table;
+	        $date = date( "Y-m-d H:i:s" );
+	        $wpdb->update( $table,
+		        array(
+			        'email'         => $email,
+			        'modified_at'   => $date,
+			        'synced_at'=>null
+		        ),
+		        array( 'cart_identifier' => $identifier ),
+		        array(
+			        '%s',
+			        '%s',
+			        '%s'
+		        ) );
+
+	        $this->_sync_remote_if_should();
+        }
+
+        public function _sync_local($identifier, $contents){
+	        global $wpdb;
+
+	        $date = date( "Y-m-d H:i:s" );
+	        $table = $this->table;
+
+	        $existing_row = $wpdb->get_row($wpdb->prepare("select * from $table where cart_identifier = %s", $identifier));
+
+	        if($existing_row){
+	        	$wpdb->update($table,
+			        array(
+				        'state'           => 'add_to_cart',
+				        'cart_contents'   => json_encode( $contents ),
+				        'modified_at'     => $date,
+				        'synced_at'=>null
+			        ),
+			        array('cart_identifier'=>$identifier),
+			        array(
+				        '%s',
+				        '%s',
+				        '%s',
+				        '%s',
+			        ) );
+	        }
+	        else{
+		        $wpdb->insert( $table,
+			        array(
+				        'cart_identifier' => $identifier,
+				        'state'           => 'add_to_cart',
+				        'cart_contents'   => json_encode( $contents ),
+				        'modified_at'     => $date,
+				        'email'           => $contents['email'] ? $contents['email'] : null,
+				        'synced_at'       => null,
+				        'finalised_at'    => null
+			        ),
+			        array(
+				        '%s',
+				        '%s',
+				        '%s',
+				        '%s',
+				        '%s',
+				        '%s'
+			        ) );
+	        }
+
+
+        }
 	    /**
 	     * @param null $status
 	     * @param null $email
@@ -343,18 +414,13 @@ function wooc_abandon_init(){
 
 	            $contents = $this->contentsFromCart( $cart );
 
-	            WC()->cart->calculate_totals();
-	            $contents['meta']['checkout_url'] = wc_get_checkout_url();
-	            $contents['meta']['total']        = WC()->cart->subtotal;
+
             }
             else{
             	$contents = $this->contentsFromOrder($order);
-	            $contents['meta']['total'] = $order->get_total();
             }
 
 
-	        $contents['meta']['currency']        = get_woocommerce_currency();
-	        $contents['meta']['currency_symbol'] = get_woocommerce_currency_symbol();
 
             if($status){
 	            $contents['meta']['current_status'] = $status;
@@ -382,7 +448,10 @@ function wooc_abandon_init(){
 
 	            global $wpdb;
 
-	            $sql = "insert into {$wpdb->prefix}woocabandon_carts (cookie, unique_key, cart_contents, created_at, modified_at, email, synced_at, finalised_at) VALUES (%s,%s, %s, %s, %s, %s, null, %s) ON DUPLICATE KEY UPDATE cart_contents = %s, modified_at = %s, synced_at=null";
+
+	            $table = $this->table;
+
+	            $sql = "insert into $table (cookie, unique_key, cart_contents, created_at, modified_at, email, synced_at, finalised_at) VALUES (%s,%s, %s, %s, %s, %s, null, %s) ON DUPLICATE KEY UPDATE cart_contents = %s, modified_at = %s, synced_at=null";
 
 	            $json_contents = json_encode( $contents );
 
@@ -392,7 +461,7 @@ function wooc_abandon_init(){
 
 
 	        if ( $email ) {
-		        $sql = "update {$wpdb->prefix}woocabandon_carts set email = %s where cookie = %s";
+		        $sql = "update $table set email = %s where cookie = %s";
 
 		        $sql = $wpdb->prepare( $sql, $email, $cookie );
 		        $wpdb->query( $sql );
@@ -400,7 +469,7 @@ function wooc_abandon_init(){
 
 
 	            if($order){
-	            	$sql = "update {$wpdb->prefix}woocabandon_carts set cookie = concat(cookie,'_completed".time()."') where cookie = %s";
+	            	$sql = "update $table set cookie = concat(cookie,'_completed".time()."') where cookie = %s";
 
 	            	$sql = $wpdb->prepare($sql, $cookie);
 	            	$wpdb->query($sql);
@@ -415,7 +484,9 @@ function wooc_abandon_init(){
 
             // if there's 10 entries, or if an order was modified > 10 mins ago.
 	        // force a sync if it's a completed order.
+	        error_log("checking if should sync.");
 	        if($this->should_sync() || $status == "completed"){
+	        	error_log("entering sync routine");
 		        $this->sync_to_server();
 	        }
 
@@ -426,33 +497,46 @@ function wooc_abandon_init(){
 
         public function should_sync(){
         	global $wpdb;
+        	$table = $this->table;
         	//$sql = "insert into {$wpdb->prefix}woocabandon_carts (cookie, cart_contents, created_at, email, synced_at) VALUES (%s,%s, %s, %s, null) ON DUPLICATE KEY UPDATE cart_contents = %s, modified_at = %s";
-			$sql = "select count(*) as count from {$wpdb->prefix}woocabandon_carts where synced_at = null;";
+			$sql = "select count(*) as count from $table where synced_at = null;";
 
 			$row = $wpdb->get_row($sql);
 
 			if( (int)$row->count > 10){
 				return true;
 			}
+			error_log("there's less than 10 rows.");
 
-			$sql = "select modified_at as first_modified_not_synced from {$wpdb->prefix}woocabandon_carts where synced_at is null order by modified_at asc;";
+			$sql = "select modified_at as first_modified_not_synced from $table where synced_at is null order by modified_at asc;";
 
 			$row = $wpdb->get_row($sql);
 			$minute = 60;
+
 			if(strtotime($row->first_modified_not_synced) < time() - (self::$send_orders_older_than_minutes * $minute)){
 				return true;
 			}
+
+			// if ANY orders have been finalised and not synced, sync.
+	        $sql = "select count(*) as count from $table where synced_at = null and finalised_at is not null;";
+
+	        $row = $wpdb->get_row( $sql );
+
+	        if ( (int) $row->count > 0) {
+		        return true;
+	        }
 
 			return false;
         }
 
         public function sync_to_server(){
         	global $wpdb;
+        	$table = $this->table;
         	$sync_key = wp_generate_password( 24 );
 	        $date = date( "Y-m-d H:i:s" );
         	$wpdb->update( "{$wpdb->prefix}woocabandon_carts", ['sync_key'=> $sync_key, 'sync_attempted_at'=> $date], ['synced_at'=>null]);
 
-        	$records = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$wpdb->prefix}woocabandon_carts WHERE sync_key = %s",
+        	$records = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM $table WHERE sync_key = %s",
 		        $sync_key ) );
 
 
@@ -468,19 +552,29 @@ function wooc_abandon_init(){
 	        );
 
 
-        	$response = wp_remote_post(self::$settings['endpoint'] . "/api/store_sync?XDEBUG_SESSION_START=1", $args);
+	        $url = self::$settings['endpoint'] . "/api/store_sync?XDEBUG_SESSION_START=1";
+
+	        error_log("calling" . $url );
+
+        	$response = wp_remote_post($url, $args);
+			error_log("response is");
+			error_log(json_encode($response));
+
 
         	if($response && gettype($response) !== "WP_Error"){
         		$response_object = json_decode($response['body']);
 
         		if( $response_object->result === "success"){
-			        $wpdb->update( "{$wpdb->prefix}woocabandon_carts", [ 'synced_at' => date( "Y-m-d H:i:s" )],
+			        $wpdb->update( $table, [ 'synced_at' => date( "Y-m-d H:i:s" )],
 				        [ 'sync_key' => $sync_key ] );
 		        }
 		        else{
 
-			        $wpdb->update( "{$wpdb->prefix}woocabandon_carts", [ 'sync_key' => null ],
+			        $wpdb->update( $table, [ 'sync_key' => null ],
 				        [ 'sync_key' => $sync_key ] );
+
+			        error_log("Remote server said");
+			        error_log($response_object);
 		        }
 	        }
 
@@ -544,7 +638,18 @@ function wooc_abandon_init(){
 				$contents['items'][] = $line;
 			}
 
+	        $contents['meta']['total'] = $order->get_total();
+
+	        $this->_add_generic_contents( $contents );
+
 			return $contents;
+        }
+
+        public function _add_generic_contents(&$contents){
+
+	        $contents['meta']['currency']        = get_woocommerce_currency();
+	        $contents['meta']['currency_symbol'] = get_woocommerce_currency_symbol();
+
         }
 	    /**
 	     * @param $cart
@@ -578,7 +683,11 @@ function wooc_abandon_init(){
 
 
 		    }
+		    WC()->cart->calculate_totals();
+		    $contents['meta']['checkout_url'] = wc_get_checkout_url();
+		    $contents['meta']['total']        = WC()->cart->subtotal;
 
+		    $this->_add_generic_contents($contents);
 		    return $contents;
 	    }
 
