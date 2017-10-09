@@ -651,6 +651,8 @@ function wooc_abandon_init() {
 					unset( $user_info->billing_country );
 					unset( $user_info->billing_city );
 					unset( $user_info->billing_company );
+
+					$record->user_info = json_encode($user_info);
 				}
 			}
 
