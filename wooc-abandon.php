@@ -639,6 +639,20 @@ function wooc_abandon_init() {
 			$records = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM $table WHERE sync_key = %s",
 				$sync_key ) );
 
+			foreach($records as $record){
+				// sanitize the user data -- we don't want it at cartrebound.
+				if($record->user_info){
+					$user_info = json_decode($record->user_info);
+					unset( $user_info->billing_address_1 );
+					unset( $user_info->billing_address_2 );
+					unset( $user_info->billing_state );
+					unset( $user_info->billing_postcode );
+					unset( $user_info->billing_email );
+					unset( $user_info->billing_country );
+					unset( $user_info->billing_city );
+					unset( $user_info->billing_company );
+				}
+			}
 
 			if(count($records) > 0){
 
