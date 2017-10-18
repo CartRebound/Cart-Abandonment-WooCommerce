@@ -98,7 +98,6 @@ function wooc_abandon_init() {
 			add_action( 'woocommerce_settings_tabs_settings_cartrebound', array( $this, 'settings_tab' ) );
 			add_action( 'woocommerce_update_options_settings_cartrebound', array( $this, 'update_settings' ) );
 
-			// add_action("woocommerce_add_to_cart", array($this, 'get_vital_info'));
 
 			//do_action( 'woocommerce_add_to_cart', $cart_item_key, $product_id, $quantity, $variation_id, $variation, $cart_item_data );
 			add_action( "woocommerce_add_to_cart", array( $this, 'added_to_cart' ), 10, 0 );
@@ -110,8 +109,9 @@ function wooc_abandon_init() {
 
 			add_action( 'woocommerce_thankyou', array( $this, 'user_placed_order' ), 10, 1 );
 			add_action( "woocommerce_order_status_processing", array( $this, 'user_placed_order_by_email' ), 10, 1 );
+			add_action( 'wp_login', array( $this, 'user_signed_in' ) );
 
-			add_action( 'wp_login', array( $this, 'get_vital_info' ) );
+
 
 
 			add_filter( 'query_vars', array( $this, 'abandon_query_vars_filter' ) );
@@ -131,6 +131,12 @@ function wooc_abandon_init() {
 
 		}
 
+		public function user_signed_in(){
+
+			$email = wp_get_current_user()->user_email;;
+			$this->_set_email_local( $this->_get_identifier(), $email );
+		}
+
 		public function reorder_woo_fields($fields) {
 			$fields['billing']['billing_email']['class'] = array_filter( $fields['billing']['billing_email']['class'], function($el){
 				return $el != "form-row-last";
@@ -138,7 +144,14 @@ function wooc_abandon_init() {
 			$fields['billing']['billing_email']['class'][] = 'form-row-wide';
 			$fields['billing']['billing_email']['clear'] = true;
 			$fields['billing']['billing_email']['priority'] = 1;
+			$fields['billing']['billing_email']['autofocus'] = true;
 
+			$fields['billing']['billing_first_name']['autofocus'] = false;
+
+			$fields['billing']['billing_phone']['class'] = array_filter( $fields['billing']['billing_phone']['class'],
+				function ( $el ) {
+					return $el != "form-row-first";
+				} );
 			$fields['billing']['billing_phone']['class'][] = 'form-row-wide';
 			$fields['billing']['billing_phone']['clear'] = true;
 
@@ -312,7 +325,6 @@ function wooc_abandon_init() {
 			} else {
 				$email = $order->billing_email;
 			}
-			$this->get_vital_info( "completed", $email, $order );
 		}
 
 		public function user_placed_order( $order_id ) {
@@ -493,119 +505,6 @@ function wooc_abandon_init() {
 			}
 
 
-		}
-
-		/**
-		 * @param null $status
-		 * @param null $email
-		 * @param WC_Order $order
-		 */
-		public function get_vital_info( $status = null, $email = null, $order = null ) {
-			// 7cbbc409ec990f19c78c75bd1e06f215
-			$cookie = WC()->session->get_session_cookie()[3];
-
-			// at this stage, we need a cookie.
-			if ( ! $cookie ) {
-				return;
-			}
-
-			$contents['items'] = array();
-			$contents['meta']  = array();
-			if ( $status != "completed" ) {
-				$cart_hash = md5( json_encode( WC()->cart->get_cart_for_session() ) );
-
-
-				$cart = WC()->cart->cart_contents;
-
-				$contents = $this->contentsFromCart( $cart );
-
-
-			} else {
-				$contents = $this->contentsFromOrder( $order );
-			}
-
-
-			if ( $status ) {
-				$contents['meta']['current_status'] = $status;
-			}
-
-			if ( ! $email ) {
-				$email = wp_get_current_user()->user_email;
-
-			}
-
-			if ( ! $email && $order ) {
-				$email = $order->get_billing_email();
-			}
-
-			if ( ! $email ) {
-
-				$transient_key = $this->get_transient_key_for_cookie_element();
-
-				if ( $payload = get_transient( $transient_key ) ) {
-					$email = $payload['email'];
-				}
-			}
-
-			if ( isset( $_POST['post_data'] ) ) {
-				$user_info = $this->_encode_customer( $_POST['post_data'] );
-
-			}
-			error_log( $cookie . " " . $cart_hash . " " . $email );
-
-
-			global $wpdb;
-
-
-			$table = $this->table;
-
-			$sql = "insert into $table (cookie, unique_key, cart_contents, created_at, modified_at, email, synced_at, finalised_at, user_info) VALUES (%s,%s, %s, %s, %s, %s, null, %s, %s) ON DUPLICATE KEY UPDATE cart_contents = %s, user_info = %s, modified_at = %s, synced_at=null";
-
-			$json_contents = json_encode( $contents );
-
-			$date = date( "Y-m-d H:i:s" );
-			$sql  = $wpdb->prepare( $sql, $cookie, $cookie . time(), $json_contents, $date, $date, $email,
-				( $order ? $date : null ), $user_info, $json_contents, $date );
-			$wpdb->query( $sql );
-
-
-			if ( $wpdb->last_error ) {
-				error_log( $wpdb->last_error );
-			}
-
-
-			if ( $email ) {
-				$sql = "update $table set email = %s where cookie = %s";
-
-				$sql = $wpdb->prepare( $sql, $email, $cookie );
-				$wpdb->query( $sql );
-			}
-
-
-			if ( $order ) {
-				$sql = "update $table set cookie = concat(cookie,'_completed" . time() . "') where cookie = %s";
-
-				$sql = $wpdb->prepare( $sql, $cookie );
-				$wpdb->query( $sql );
-			}
-
-
-			/*
-			$wpdb->update($wpdb->prefix . 'woocabandon_carts', array(
-				'cookie'=>$cookie,
-				'cart_contents'=>$contents),
-			array('cookie'=>$cookie));*/
-
-			// if there's 10 entries, or if an order was modified > 10 mins ago.
-			// force a sync if it's a completed order.
-			error_log( "checking if should sync." );
-			if ( $this->should_sync() || $status == "completed" ) {
-				error_log( "entering sync routine" );
-				$this->sync_to_server();
-			}
-
-
-			// $response = wp_remote_post(self::$settings['endpoint'] . "/api/vitals?XDEBUG_SESSION_START=1", $args);
 		}
 
 		public function should_sync() {
