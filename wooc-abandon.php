@@ -119,6 +119,9 @@ function wooc_abandon_init() {
 			add_action( 'pre_get_posts', array( $this, 'abandon_url_handler' ) );
 
 
+			add_filter( 'woocommerce_checkout_fields', array($this, 'reorder_woo_fields') );
+
+
 			global $wpdb;
 			$this->table = "{$wpdb->prefix}woocabandon_carts";
 
@@ -128,6 +131,19 @@ function wooc_abandon_init() {
 
 		}
 
+		public function reorder_woo_fields($fields) {
+			$fields['billing']['billing_email']['class'] = array_filter( $fields['billing']['billing_email']['class'], function($el){
+				return $el != "form-row-last";
+			});
+			$fields['billing']['billing_email']['class'][] = 'form-row-wide';
+			$fields['billing']['billing_email']['clear'] = true;
+			$fields['billing']['billing_email']['priority'] = 1;
+
+			$fields['billing']['billing_phone']['class'][] = 'form-row-wide';
+			$fields['billing']['billing_phone']['clear'] = true;
+
+			return $fields;
+		}
 
 		public function abandon_query_vars_filter( $vars ) {
 			$vars[] = "resume_cart_with_cookie";
