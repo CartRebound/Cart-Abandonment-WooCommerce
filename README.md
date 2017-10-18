@@ -1,4 +1,4 @@
-# CartRebound plugin for WooCommerce source
+# CartRebound plugin for WooCommerce
 CartRebound plugin for WooCommerce - Cart Abandonment emails
 
 CartRebound is a [cart abandonment tool for WooCommerce](https://www.cartrebound.com). 
