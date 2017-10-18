@@ -9,3 +9,11 @@ To get up and running with CartRebound, you first need to [create an account](ht
 
 Once you've got an account, install this plugin on your WooCommerce store and you're good to go.
 
+
+
+
+---
+
+
+
+![CartRebound logo](https://www.cartrebound.com/wp-content/uploads/2017/10/rocketcart.png)
