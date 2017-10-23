@@ -424,9 +424,12 @@ function wooc_abandon_init() {
 
 			$contents = $this->contentsFromCart( WC()->cart->cart_contents );
 
-			$this->_sync_local( $identifier, $contents, null );
+			if($identifier){
+				$this->_sync_local( $identifier, $contents, null );
 
-			$this->_sync_remote_if_should();
+				$this->_sync_remote_if_should();
+			}
+
 		}
 
 		public function _sync_remote_if_should() {
