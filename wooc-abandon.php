@@ -325,6 +325,19 @@ function wooc_abandon_init() {
 			} else {
 				$email = $order->billing_email;
 			}
+
+			$identifier = $this->_get_last_identifier_for_email($email);
+
+
+			if($identifier){
+				$contents = $this->contentsFromOrder( $order );
+
+				$this->_sync_local( $identifier, $contents, $user_info = null );
+
+				$this->_sync_remote_if_should();
+			}
+
+
 		}
 
 		public function user_placed_order( $order_id ) {
@@ -367,6 +380,20 @@ function wooc_abandon_init() {
 
 			return json_encode( $whitelisted );
 		}
+
+		public function _get_last_identifier_for_email($email){
+			global $wpdb;
+
+			$table = $this->table;
+			$results = $wpdb->get_results($wpdb->prepare("select cart_identifier from $table where email = %s order by modified_at desc", $email));
+
+			if(count($results) > 0){
+				$identifier = $results[0]->cart_identifier;
+				return $identifier;
+			}
+			return null;
+		}
+
 
 		public function _get_identifier() {
 			$session_cookie = WC()->session->get_session_cookie();
