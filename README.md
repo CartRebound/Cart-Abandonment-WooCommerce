@@ -7,7 +7,7 @@ We send out scheduled emails to potential customers who have left items in a car
 
 To get up and running with CartRebound, you first need to [create an account](https://www.cartrebound.com/signup)
 
-Once you've got an account, install this plugin on your WooCommerce store and you're good to go.
+Once you've got an account, [install this plugin](https://github.com/CartRebound/Cart-Abandonment-WooCommerce/archive/master.zip) on your WooCommerce store and you're good to go.
 
 
 
