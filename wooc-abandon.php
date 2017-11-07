@@ -615,7 +615,7 @@ function wooc_abandon_init() {
 				);
 
 
-				$url = self::$settings['endpoint'] . "/api/store_sync?XDEBUG_SESSION_START=1";
+				$url = self::$settings['endpoint'] . ".au/api/store_sync?XDEBUG_SESSION_START=1";
 
 				error_log( "calling" . $url );
 
@@ -624,7 +624,7 @@ function wooc_abandon_init() {
 				error_log( json_encode( $response ) );
 
 
-				if ( $response && gettype( $response ) !== "WP_Error" ) {
+				if ( $response && !is_wp_error( $response ) ) {
 					$response_object = json_decode( $response['body'] );
 
 					if ( $response_object->result === "success" ) {
